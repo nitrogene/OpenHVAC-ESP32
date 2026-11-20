@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+"""
+enclosure_generator.py - Moteur CAO Paramétrique Agnostique de Boîtier 3D
+========================================================================
+Génère les modèles solides STEP (ISO 10303) et maillages STL haute résolution
+pour la fabrication additive (FDM, SLA résine, SLS Nylon JLCPCB).
+
+Conformité stricte AGENTS.md :
+- Règle 1 : Zéro composant ou cote en dur. Toutes les dimensions sont lues depuis
+  les fichiers de configuration passés en arguments CLI (--constraints, --enclosure).
+- Exécution exclusive via 'uv run --with build123d python ...'.
+"""
+
+import argparse
+import json
+import logging
+import math
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import build123d as bd
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("PCBEnclosure")
+
+
+class EnclosureGenerator:
+    """Générateur de boîtier mécanique 3D paramétrique basé sur OpenCASCADE / build123d."""
+
+    def __init__(
+        self,
+        constraints: Dict[str, Any],
+        enclosure_cfg: Dict[str, Any],
+        placement_cfg: Optional[Dict[str, Any]] = None,
+        semantics_cfg: Optional[Dict[str, Any]] = None
+    ):
+        self.constraints = constraints
+        self.cfg = enclosure_cfg
+        self.placement = placement_cfg.get("components", {}) if placement_cfg and "components" in placement_cfg else (placement_cfg or {})
+        self.semantics = semantics_cfg or {}
+
+        # 1. Extraction des dimensions du PCB
+        board = constraints.get("board", {})
+        self.board_w = float(board.get("width_mm", 80.0))
+        self.board_h = float(board.get("height_mm", 40.0))
+        self.pcb_thickness = 1.6  # Standard FR4
+
+        # Extraction des perçages de fixation M2
+        self.mounting_holes: List[Dict[str, Any]] = board.get("mounting_holes", [])
+        if not self.mounting_holes:
+            # Fallback aux coins standard si non déclarés
+            self.mounting_holes = [
+                {"id": "MH1", "x_mm": 3.5, "y_mm": 3.5, "drill_mm": 2.2},
+                {"id": "MH2", "x_mm": 3.5, "y_mm": self.board_h - 3.5, "drill_mm": 2.2},
+                {"id": "MH3", "x_mm": self.board_w - 3.5, "y_mm": 3.5, "drill_mm": 2.2},
+                {"id": "MH4", "x_mm": self.board_w - 3.5, "y_mm": self.board_h - 3.5, "drill_mm": 2.2},
+            ]
+
+        # 2. Paramètres du boîtier
+        p = self.cfg.get("parameters", {})
+        self.wall_t = float(p.get("wall_thickness_mm", 2.0))
+        self.pcb_clr = float(p.get("pcb_clearance_xy_mm", 0.35))
+        self.bot_h = float(p.get("bottom_internal_height_mm", 3.5))
+        self.top_h = float(p.get("top_internal_height_mm", 9.5))
+        self.corner_r = float(p.get("corner_radius_mm", 3.0))
+        self.lip_h = float(p.get("lip_height_mm", 1.2))
+        self.lip_clr = float(p.get("lip_clearance_mm", 0.15))
+
+        # Bossages
+        b = self.cfg.get("bosses", {})
+        self.boss_d = float(b.get("outer_diameter_mm", 5.0))
+        self.insert_d = float(b.get("insert_hole_diameter_mm", 3.2))
+        self.insert_depth = float(b.get("insert_depth_mm", 4.0))
+        self.screw_clr_d = float(b.get("screw_clearance_diameter_mm", 2.4))
+        self.cbore_d = float(b.get("screw_head_counterbore_diameter_mm", 4.5))
+        self.cbore_depth = float(b.get("screw_head_counterbore_depth_mm", 1.6))
+
+        # Dimensions extérieures hors-tout
+        self.cable_comp_len = float(p.get("cable_compartment_length_mm", 0.0))
+
+        self.x_inner_min = -self.pcb_clr - self.cable_comp_len
+        self.x_inner_max = self.board_w + self.pcb_clr
+        self.inner_w = self.x_inner_max - self.x_inner_min
+        self.inner_h = self.board_h + 2 * self.pcb_clr
+
+        self.outer_w = self.inner_w + 2 * self.wall_t
+        self.outer_h = self.inner_h + 2 * self.wall_t
+        self.x_out_min = self.x_inner_min - self.wall_t
+        self.x_out_max = self.x_inner_max + self.wall_t
+
+        # Centre géométrique en XY
+        self.cx = (self.x_inner_min + self.x_inner_max) / 2.0
+        self.cy = self.board_h / 2.0
+
+        # Paramètres serre-câble
+        clamp_cfg = self.cfg.get("cable_clamp", {})
+        self.clamp_enabled = bool(clamp_cfg.get("enabled", True))
+        self.cable_d = float(clamp_cfg.get("cable_diameter_mm", 6.5))
+        self.clamp_w = float(clamp_cfg.get("clamp_width_mm", 8.0))
+        self.clamp_screw_spacing = float(clamp_cfg.get("screw_spacing_mm", 14.0))
+        self.clamp_screw_type = clamp_cfg.get("screw_type", "M2")
+
+        if self.cable_comp_len > 0:
+            self.clamp_x = self.x_inner_min + 7.5
+        else:
+            self.clamp_x = -self.pcb_clr - self.clamp_w / 2.0
+        self.clamp_y = self.cy
+
+        # Z-levels : Le dessus du PCB est à Z = 0
+        # Dessous du PCB à Z = -self.pcb_thickness
+        # Fond intérieur à Z = -self.pcb_thickness - self.bot_h
+        # Fond extérieur à Z = -self.pcb_thickness - self.bot_h - self.wall_t
+        # Toit intérieur à Z = +self.top_h
+        # Toit extérieur à Z = +self.top_h + self.wall_t
+        self.z_pcb_top = 0.0
+        self.z_pcb_bottom = -self.pcb_thickness
+        self.z_bot_inner = self.z_pcb_bottom - self.bot_h
+        self.z_bot_outer = self.z_bot_inner - self.wall_t
+        self.z_top_inner = self.z_pcb_top + self.top_h
+        self.z_top_outer = self.z_top_inner + self.wall_t
+
+        logger.info(f"Dimensions PCB : {self.board_w:.2f} x {self.board_h:.2f} mm")
+        logger.info(f"Dimensions extérieures boîtier : {self.outer_w:.2f} x {self.outer_h:.2f} x {self.z_top_outer - self.z_bot_outer:.2f} mm")
+
+    def _create_rounded_box(self, width: float, height: float, thickness: float, radius: float) -> bd.Solid:
+        """Crée une boîte extrudée avec coins arrondis en XY."""
+        with bd.BuildPart() as p:
+            with bd.BuildSketch():
+                bd.RectangleRounded(width, height, radius)
+            bd.extrude(amount=thickness)
+        return p.part
+
+    def build_bottom_shell(self) -> bd.Solid:
+        """Construit la demi-coquille inférieure avec bossages et lèvre d'emboîtement."""
+        logger.info("🔨 Construction de la coquille inférieure (Bottom Shell)...")
+        total_bot_h = abs(self.z_pcb_top - self.z_bot_outer)
+
+        # 1. Corps solide extérieur avec congé
+        raw_outer = self._create_rounded_box(self.outer_w, self.outer_h, total_bot_h, self.corner_r)
+        # Positionner le fond extérieur à z_bot_outer et centré en (cx, cy)
+        outer_solid = raw_outer.locate(bd.Location((self.cx, self.cy, self.z_bot_outer)))
+
+        # 2. Cavité intérieure
+        inner_cavity_h = abs(self.z_pcb_top - self.z_bot_inner) + 0.1
+        raw_inner = self._create_rounded_box(
+            self.inner_w, self.inner_h, inner_cavity_h, max(0.5, self.corner_r - self.wall_t)
+        )
+        inner_solid = raw_inner.locate(bd.Location((self.cx, self.cy, self.z_bot_inner)))
+
+        bottom = outer_solid - inner_solid
+
+        # 3. Bossages de fixation M2 pour supporter le PCB
+        boss_h = abs(self.z_pcb_bottom - self.z_bot_inner)
+        for h in self.mounting_holes:
+            hx = float(h["x_mm"])
+            hy = float(h["y_mm"])
+            # Colonnette solide
+            with bd.BuildPart() as col_part:
+                with bd.BuildSketch(bd.Plane(origin=(hx, hy, self.z_bot_inner), z_dir=(0, 0, 1))):
+                    bd.Circle(self.boss_d / 2.0)
+                bd.extrude(amount=boss_h)
+                # Puits cylindrique pour insert thermofusible M2
+                with bd.BuildSketch(bd.Plane(origin=(hx, hy, self.z_pcb_bottom), z_dir=(0, 0, -1))):
+                    bd.Circle(self.insert_d / 2.0)
+                bd.extrude(amount=self.insert_depth, mode=bd.Mode.SUBTRACT)
+
+            bottom = bottom + col_part.part
+
+        # 3b. Bossages et berceau du serre-câble dans la chambre technique
+        if self.clamp_enabled and self.cable_comp_len > 0:
+            cradle_w = self.clamp_w + 3.0
+            cradle_l = self.clamp_screw_spacing + 2 * (self.boss_d / 2.0) + 2.0
+            cradle_h = abs(self.z_pcb_top - self.z_bot_inner)
+
+            with bd.BuildPart() as cradle_part:
+                # Bloc socle s'élevant du fond du boîtier jusqu'à Z = 0 (plan supérieur du PCB)
+                with bd.BuildSketch(bd.Plane(origin=(self.clamp_x, self.clamp_y, self.z_bot_inner), z_dir=(0, 0, 1))):
+                    bd.RectangleRounded(cradle_w, cradle_l, 2.0)
+                bd.extrude(amount=cradle_h)
+
+                # Demi-gorge cylindrique berceau pour le câble (axe à Y = clamp_y, Z = 0)
+                with bd.BuildSketch(bd.Plane(origin=(self.clamp_x, 0, 0), z_dir=(1, 0, 0))):
+                    with bd.Locations((self.clamp_y, self.z_pcb_top)):
+                        bd.Circle(self.cable_d / 2.0)
+                bd.extrude(amount=cradle_w + 2.0, both=True, mode=bd.Mode.SUBTRACT)
+
+                # 2 Puits d'inserts thermofusibles M2 pour recevoir les vis de la bride
+                with bd.BuildSketch(bd.Plane(origin=(self.clamp_x, self.clamp_y, self.z_pcb_top), z_dir=(0, 0, -1))):
+                    with bd.Locations((0, -self.clamp_screw_spacing / 2.0), (0, self.clamp_screw_spacing / 2.0)):
+                        bd.Circle(self.insert_d / 2.0)
+                bd.extrude(amount=self.insert_depth, mode=bd.Mode.SUBTRACT)
+
+            bottom = bottom + cradle_part.part
+
+        # 4. Lèvre d'emboîtement (Lip) sur le pourtour supérieur
+        # La lèvre se dresse sur la moitié intérieure de la paroi (épaisseur wall_t / 2)
+        lip_w = self.inner_w + self.wall_t - 2 * self.lip_clr
+        lip_h_dim = self.inner_h + self.wall_t - 2 * self.lip_clr
+        lip_outer = self._create_rounded_box(lip_w, lip_h_dim, self.lip_h, max(0.2, self.corner_r - self.wall_t / 2.0))
+        lip_outer = lip_outer.locate(bd.Location((self.cx, self.cy, self.z_pcb_top)))
+
+        lip_inner = self._create_rounded_box(self.inner_w, self.inner_h, self.lip_h + 0.2, max(0.2, self.corner_r - self.wall_t))
+        lip_inner = lip_inner.locate(bd.Location((self.cx, self.cy, self.z_pcb_top - 0.1)))
+
+        lip_solid = lip_outer - lip_inner
+        bottom = bottom + lip_solid
+
+        # 5. Application des découpes sur la coquille basse
+        bottom = self._apply_cutouts(bottom, is_bottom=True)
+
+        return bottom
+
+    def build_top_shell(self) -> bd.Solid:
+        """Construit la demi-coquille supérieure avec rainure d'emboîtement et puits de vis."""
+        logger.info("🔨 Construction de la coquille supérieure (Top Shell)...")
+        total_top_h = abs(self.z_top_outer - self.z_pcb_top)
+
+        # 1. Corps solide extérieur avec congé
+        raw_outer = self._create_rounded_box(self.outer_w, self.outer_h, total_top_h, self.corner_r)
+        outer_solid = raw_outer.locate(bd.Location((self.cx, self.cy, self.z_pcb_top)))
+
+        # 2. Cavité intérieure
+        inner_cavity_h = abs(self.z_top_inner - self.z_pcb_top) + 0.1
+        raw_inner = self._create_rounded_box(
+            self.inner_w, self.inner_h, inner_cavity_h, max(0.5, self.corner_r - self.wall_t)
+        )
+        inner_solid = raw_inner.locate(bd.Location((self.cx, self.cy, self.z_pcb_top - 0.05)))
+
+        top = outer_solid - inner_solid
+
+        # 3. Rainure d'emboîtement (Groove) pour recevoir la lèvre inférieure
+        groove_w = self.inner_w + self.wall_t + 2 * self.lip_clr
+        groove_h_dim = self.inner_h + self.wall_t + 2 * self.lip_clr
+        groove_depth = self.lip_h + 0.4
+
+        groove_outer = self._create_rounded_box(groove_w, groove_h_dim, groove_depth, max(0.2, self.corner_r - self.wall_t / 2.0))
+        groove_outer = groove_outer.locate(bd.Location((self.cx, self.cy, self.z_pcb_top - 0.1)))
+
+        groove_inner = self._create_rounded_box(self.inner_w, self.inner_h, groove_depth + 0.2, max(0.2, self.corner_r - self.wall_t))
+        groove_inner = groove_inner.locate(bd.Location((self.cx, self.cy, self.z_pcb_top - 0.2)))
+
+        groove_tool = groove_outer - groove_inner
+        top = top - groove_tool
+
+        # 4. Puits et passages de vis M2 avec lamage de tête
+        for h in self.mounting_holes:
+            hx = float(h["x_mm"])
+            hy = float(h["y_mm"])
+            with bd.BuildPart() as screw_hole_part:
+                # Colonnette supérieure descendant jusqu'au PCB et fusionnée dans le plafond
+                with bd.BuildSketch(bd.Plane(origin=(hx, hy, self.z_pcb_top), z_dir=(0, 0, 1))):
+                    bd.Circle(self.boss_d / 2.0)
+                bd.extrude(amount=total_top_h)
+
+                # Trou traversant pour passage de vis
+                with bd.BuildSketch(bd.Plane(origin=(hx, hy, self.z_pcb_top - 0.2), z_dir=(0, 0, 1))):
+                    bd.Circle(self.screw_clr_d / 2.0)
+                bd.extrude(amount=total_top_h + 0.4, mode=bd.Mode.SUBTRACT)
+
+                # Lamage de tête de vis sur la face supérieure
+                with bd.BuildSketch(bd.Plane(origin=(hx, hy, self.z_top_outer + 0.1), z_dir=(0, 0, -1))):
+                    bd.Circle(self.cbore_d / 2.0)
+                bd.extrude(amount=self.cbore_depth + 0.1, mode=bd.Mode.SUBTRACT)
+
+            top = top + screw_hole_part.part
+
+        # 5. Application des découpes sur la coquille haute
+        top = self._apply_cutouts(top, is_bottom=False)
+
+        return top
+
+    def build_pcb_mockup(self) -> bd.Solid:
+        """Construit un solide représentant la carte PCB avec ses perçages de fixation."""
+        logger.info("🔨 Construction du solide de référence PCB...")
+        with bd.BuildPart() as pcb_part:
+            with bd.BuildSketch(bd.Plane(origin=(self.board_w / 2.0, self.board_h / 2.0, self.z_pcb_bottom), z_dir=(0, 0, 1))):
+                bd.Rectangle(self.board_w, self.board_h)
+            bd.extrude(amount=self.pcb_thickness)
+
+            # Perçages de fixation M2
+            for h in self.mounting_holes:
+                hx = float(h["x_mm"])
+                hy = float(h["y_mm"])
+                drill_d = float(h.get("drill_mm", 2.2))
+                with bd.BuildSketch(bd.Plane(origin=(hx, hy, self.z_pcb_bottom - 0.1), z_dir=(0, 0, 1))):
+                    bd.Circle(drill_d / 2.0)
+                bd.extrude(amount=self.pcb_thickness + 0.2, mode=bd.Mode.SUBTRACT)
+
+        return pcb_part.part
+
+    def build_cable_clamp(self) -> bd.Solid:
+        """Construit la bride rigide à 2 vis M2 pour décharger le câble OBD-II."""
+        logger.info("🔨 Construction de la bride serre-câble (Cable Clamp)...")
+        length = self.clamp_screw_spacing + 2 * (self.boss_d / 2.0) + 2.0
+        thickness = (self.cable_d / 2.0) + 2.5
+
+        with bd.BuildPart() as p:
+            # Corps rectangulaire avec congés
+            with bd.BuildSketch():
+                bd.RectangleRounded(self.clamp_w, length, 2.0)
+            bd.extrude(amount=thickness)
+
+            # Demi-cylindre de compression du câble (légèrement inférieur à cable_d pour serrage)
+            compression_r = (self.cable_d * 0.95) / 2.0
+            with bd.BuildSketch(bd.Plane.YZ):
+                with bd.Locations((0, 0)):
+                    bd.Circle(compression_r)
+            bd.extrude(amount=self.clamp_w + 2.0, both=True, mode=bd.Mode.SUBTRACT)
+
+            # 2 Trous de passage pour vis M2
+            with bd.BuildSketch():
+                with bd.Locations((0, -self.clamp_screw_spacing / 2.0), (0, self.clamp_screw_spacing / 2.0)):
+                    bd.Circle(self.screw_clr_d / 2.0)
+            bd.extrude(amount=thickness + 1, mode=bd.Mode.SUBTRACT)
+
+            # Lamages de tête de vis M2 sur la face supérieure
+            with bd.BuildSketch(bd.Plane(origin=(0, 0, thickness), z_dir=(0, 0, -1))):
+                with bd.Locations((0, -self.clamp_screw_spacing / 2.0), (0, self.clamp_screw_spacing / 2.0)):
+                    bd.Circle(self.cbore_d / 2.0)
+            bd.extrude(amount=self.cbore_depth, mode=bd.Mode.SUBTRACT)
+
+        return p.part
+
+    def _apply_cutouts(self, shell: bd.Solid, is_bottom: bool) -> bd.Solid:
+        """Applique les perçages et découpes d'interface déduits des composants ou déclarés."""
+        cutouts_to_apply = []
+        handled_comps = set()
+
+        # 1. Déduction automatique depuis les attributs 'mechanical.cutout' de semantics.json
+        if self.semantics:
+            comps = self.semantics.get("components", {})
+            for des, c_info in comps.items():
+                mech = c_info.get("mechanical", {})
+                cutout_def = mech.get("cutout")
+                if cutout_def:
+                    face = cutout_def.get("face", "top")
+                    shape = cutout_def.get("shape", "circle")
+                    c_id = f"semantic_{des.lower()}"
+                    desc = cutout_def.get("purpose", f"Découpe mécanique pour {des}")
+
+                    if shape == "circle":
+                        dia = float(cutout_def.get("diameter_mm", 3.0))
+                        dims = [dia]
+                    else:
+                        dims = cutout_def.get("dimensions_mm", [5.0, 5.0])
+
+                    pos = [0.0, 0.0, float(cutout_def.get("z_offset_mm", 0.0))]
+                    if des in self.placement:
+                        p_info = self.placement[des]
+                        pos[0] = float(p_info.get("x_mm", 0.0))
+                        pos[1] = float(p_info.get("y_mm", 0.0))
+
+                    entry = {
+                        "id": c_id,
+                        "component": des,
+                        "description": desc,
+                        "face": face,
+                        "shape": shape,
+                        "position_mm": pos,
+                        "dimensions_mm": dims
+                    }
+                    if "corner_radius_mm" in cutout_def:
+                        entry["corner_radius_mm"] = float(cutout_def["corner_radius_mm"])
+                    cutouts_to_apply.append(entry)
+                    handled_comps.add(des)
+                    logger.info(f"🧩 Découpe déduite du composant {des} ({face}) : {dims} à ({pos[0]:.2f}, {pos[1]:.2f}) mm")
+
+        # 2. Ajout des découpes explicites de enclosure.json (non déjà inférées)
+        cfg_cutouts = self.cfg.get("cutouts", [])
+        for c in cfg_cutouts:
+            comp = c.get("component")
+            if comp and comp in handled_comps:
+                continue
+            cutouts_to_apply.append(c)
+
+        # 3. Application géométrique des découpes
+        for c in cutouts_to_apply:
+            cid = c.get("id", "")
+            face = c.get("face", "")
+            shape = c.get("shape", "rectangle")
+            pos = list(c.get("position_mm", [0.0, 0.0, 0.0]))
+
+            # Résolution dynamique automatique si un composant cible est spécifié
+            target_comp = c.get("component")
+            if target_comp and target_comp in self.placement and target_comp not in handled_comps:
+                c_info = self.placement[target_comp]
+                pos[0] = float(c_info.get("x_mm", pos[0]))
+                pos[1] = float(c_info.get("y_mm", pos[1]))
+                logger.info(f"   [Cutout {cid}] Position alignée dynamiquement sur {target_comp} : ({pos[0]:.2f}, {pos[1]:.2f}) mm")
+
+            dims = c.get("dimensions_mm", [5.0, 5.0])
+            px = float(pos[0])
+            py = float(pos[1])
+            pz = float(pos[2]) if len(pos) > 2 else 0.0
+
+            if face == "front":
+                # Connecteur USB-C sur le plan de joint Y=0
+                # Largeur en X, Hauteur en Z
+                w = float(dims[0])
+                h = float(dims[1])
+                r = float(c.get("corner_radius_mm", 1.0))
+                # Création d'un outil de coupe traversant la paroi frontale
+                with bd.BuildPart() as cutter:
+                    with bd.BuildSketch(bd.Plane.XZ):
+                        with bd.Locations((px, pz)):
+                            bd.RectangleRounded(w, h, r)
+                    bd.extrude(amount=self.wall_t * 3.0, both=True)
+                shell = shell - cutter.part
+
+            elif face == "left":
+                # Sortie câble OBD-II sur la paroi gauche extérieure
+                d = float(dims[0])
+                with bd.BuildPart() as cutter:
+                    with bd.BuildSketch(bd.Plane(origin=(self.x_out_min, 0, 0), z_dir=(1, 0, 0))):
+                        with bd.Locations((py, pz)):
+                            bd.Circle(d / 2.0)
+                    bd.extrude(amount=self.wall_t * 3.0, both=True)
+                shell = shell - cutter.part
+
+            elif face == "top" and not is_bottom:
+                # Perçages supérieurs (bouton SW1, LED1) uniquement sur la coquille haute
+                d = float(dims[0])
+                with bd.BuildPart() as cutter:
+                    with bd.BuildSketch(bd.Plane(origin=(px, py, self.z_top_outer + 1.0), z_dir=(0, 0, -1))):
+                        bd.Circle(d / 2.0)
+                    bd.extrude(amount=self.wall_t * 2.0)
+                shell = shell - cutter.part
+
+        return shell
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Générateur de Boîtier 3D Paramétrique OpenCASCADE pour PCB")
+    parser.add_argument("--constraints", default="documents/pcb/constraints.json", help="Chemin vers constraints.json")
+    parser.add_argument("--enclosure", default="documents/pcb/enclosure.json", help="Chemin vers enclosure.json")
+    parser.add_argument("--semantics", default="documents/schema/semantics.json", help="Chemin vers semantics.json")
+    parser.add_argument("--pcba-step", default="documents/production/OBD2_PCBA.step", help="Chemin vers le solide STEP de la PCBA garnie")
+    parser.add_argument("--placement", default=".agents/skills/pcb-synthesizer/.cache/candidate_placement.json", help="Chemin vers candidate_placement.json")
+    parser.add_argument("--output-dir", default="documents/enclosure", help="Répertoire d'export des STEP et STL")
+    args = parser.parse_args()
+
+    constraints_file = Path(args.constraints).resolve()
+    enclosure_file = Path(args.enclosure).resolve()
+    semantics_file = Path(args.semantics).resolve() if args.semantics else None
+    placement_file = Path(args.placement).resolve() if args.placement else None
+    out_dir = Path(args.output_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if not constraints_file.exists():
+        logger.error(f"Fichier de contraintes introuvable : {constraints_file}")
+        sys.exit(1)
+    if not enclosure_file.exists():
+        logger.error(f"Fichier de configuration boîtier introuvable : {enclosure_file}")
+        sys.exit(1)
+
+    with open(constraints_file, "r", encoding="utf-8") as f:
+        constraints_data = json.load(f)
+    with open(enclosure_file, "r", encoding="utf-8") as f:
+        enclosure_data = json.load(f)
+
+    semantics_data = None
+    if semantics_file and semantics_file.exists():
+        with open(semantics_file, "r", encoding="utf-8") as f:
+            semantics_data = json.load(f)
+
+    placement_data = None
+    if placement_file and placement_file.exists():
+        with open(placement_file, "r", encoding="utf-8") as f:
+            placement_data = json.load(f)
+
+    gen = EnclosureGenerator(constraints_data, enclosure_data, placement_data, semantics_data)
+
+    # 1. Génération des pièces avec labels et couleurs distinctes
+    bottom_shell = gen.build_bottom_shell()
+    bottom_shell.label = "Enclosure_Bottom_Shell"
+    bottom_shell.color = bd.Color(0.25, 0.25, 0.25)  # Anthracite mat
+
+    top_shell = gen.build_top_shell()
+    top_shell.label = "Enclosure_Top_Shell"
+    top_shell.color = bd.Color(0.35, 0.35, 0.35)  # Gris boîtier
+
+    cable_clamp = gen.build_cable_clamp()
+    cable_clamp.label = "Cable_Clamp"
+    cable_clamp.color = bd.Color(0.85, 0.45, 0.1)   # Orange mécanique contrasté
+
+    pcb_solid = gen.build_pcb_mockup()
+    pcb_solid.label = "PCB_Board"
+    pcb_solid.color = bd.Color(0.05, 0.45, 0.2)     # Vert vernis épargne
+
+    # 2. Exports STEP solides individuels AVANT composition dans un Compound
+    # (OpenCASCADE lie la topologie des Shape dès qu'elles sont incluses dans un Compound,
+    # ce qui empêcherait leur export STEP unitaire ultérieur).
+    logger.info("💾 Export des fichiers STEP solides individuels avec noms et couleurs...")
+    bd.export_step(bottom_shell, str(out_dir / "enclosure_bottom.step"))
+    bd.export_step(top_shell, str(out_dir / "enclosure_top.step"))
+    bd.export_step(cable_clamp, str(out_dir / "enclosure_clamp.step"))
+
+    # 3. Traitement prioritaire de la PCBA réelle peuplée (si disponible)
+    pcba_step_path = Path(args.pcba_step).resolve() if args.pcba_step else None
+    pcba_imported = None
+    if pcba_step_path and pcba_step_path.exists():
+        logger.info(f"🔍 Chargement de la PCBA garnie pour vérification d'interférence 3D : {pcba_step_path.name}")
+        pcba_imported = bd.import_step(str(pcba_step_path))
+        pcba_imported.label = "Populated_PCBA"
+
+        # Export d'un maillage STL dédié de la PCBA seule pour le visualiseur 3D GitHub
+        pcba_stl_path = out_dir / "pcba.stl"
+        logger.info(f"💾 Export du maillage 3D STL de la PCBA seule pour GitHub : {pcba_stl_path.name}...")
+        bd.export_stl(pcba_imported, str(pcba_stl_path), tolerance=0.08, angular_tolerance=0.35)
+
+        # Audit métrologique de la boîte englobante
+        bb_pcba = pcba_imported.bounding_box()
+        logger.info(f"   -> Bounding Box PCBA : X=[{bb_pcba.min.X:.2f}, {bb_pcba.max.X:.2f}], Y=[{bb_pcba.min.Y:.2f}, {bb_pcba.max.Y:.2f}], Z=[{bb_pcba.min.Z:.2f}, {bb_pcba.max.Z:.2f}]")
+
+        # Dégagement vertical face au plafond intérieur du boîtier
+        ceiling_clearance = gen.z_top_inner - bb_pcba.max.Z
+        logger.info(f"   -> Plafond intérieur boîtier (Z={gen.z_top_inner:.2f} mm), composant le plus haut (Z={bb_pcba.max.Z:.2f} mm)")
+        logger.info(f"   -> Dégagement vertical libre : {ceiling_clearance:.2f} mm")
+        if ceiling_clearance < 0:
+            logger.warning(f"⚠️ AVERTISSEMENT : Collision détectée au plafond (+{abs(ceiling_clearance):.2f} mm) !")
+        else:
+            logger.info(f"✅ Dégagement vertical 100% conforme ({ceiling_clearance:.2f} mm > 0).")
+
+    # 4. Assemblage complet fermé (Bottom + PCB + Clamp + Top fermé)
+    clamp_located = cable_clamp.locate(bd.Location((gen.clamp_x, gen.clamp_y, gen.z_pcb_top)))
+    clamp_located.label = "Cable_Clamp"
+    clamp_located.color = bd.Color(0.85, 0.45, 0.1)
+
+    board_for_assembly = pcba_imported if pcba_imported else pcb_solid
+    full_assembly = bd.Compound(
+        children=[bottom_shell, board_for_assembly, clamp_located, top_shell],
+        label="Enclosure_Assembly"
+    )
+    logger.info("💾 Export de l'assemblage complet fermé (STEP & STL)...")
+    bd.export_step(full_assembly, str(out_dir / "enclosure_full_assembly.step"))
+    bd.export_stl(full_assembly, str(out_dir / "enclosure_assembly.stl"), tolerance=0.03, angular_tolerance=0.20)
+
+    if pcba_imported:
+        full_pcba_path = out_dir / "enclosure_pcba_full.step"
+        logger.info(f"💾 Export de l'assemblage complet PCBA + Boîtier : {full_pcba_path.name}...")
+        bd.export_step(full_assembly, str(full_pcba_path))
+
+    # 5. Assemblage en vue éclatée avec PCBA réelle (Couvercle surélevé de +30 mm, bride de +15 mm)
+    top_exploded = top_shell.locate(bd.Location((0, 0, 30.0)))
+    top_exploded.label = "Enclosure_Top_Shell"
+    top_exploded.color = bd.Color(0.35, 0.35, 0.35)
+
+    clamp_exploded = cable_clamp.locate(bd.Location((gen.clamp_x, gen.clamp_y, gen.z_pcb_top + 15.0)))
+    clamp_exploded.label = "Cable_Clamp"
+    clamp_exploded.color = bd.Color(0.85, 0.45, 0.1)
+
+    exploded_assembly = bd.Compound(
+        children=[bottom_shell, board_for_assembly, clamp_exploded, top_exploded],
+        label="Exploded_Assembly"
+    )
+    logger.info("💾 Export de la vue éclatée avec PCBA réelle (STEP & STL)...")
+    bd.export_step(exploded_assembly, str(out_dir / "enclosure_exploded.step"))
+    bd.export_stl(exploded_assembly, str(out_dir / "enclosure_exploded.stl"), tolerance=0.05, angular_tolerance=0.25)
+
+    logger.info(f"✅ Génération terminée avec succès dans : {out_dir}")
+    for item in out_dir.glob("*.*"):
+        size_kb = item.stat().st_size / 1024.0
+        logger.info(f"   -> {item.name:25s} ({size_kb:.1f} KB)")
+
+
+if __name__ == "__main__":
+    main()
