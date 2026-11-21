@@ -1,0 +1,555 @@
+{
+  "$schema": "./netlist.schema.json",
+  "project": "OpenHVAC-ESP32",
+  "version": "1.0.0",
+  "sheet": {
+    "title": "OpenHVAC-ESP32 — Airton ESP32-C6 Zigbee/Wi-Fi Controller",
+    "grid": 10
+  },
+  "blocks": {
+    "power_input": {
+      "title": "12V HVAC Input, Reverse Polarity & USB OR-ing",
+      "description": "JST XA 2.5 4-pin HVAC connector, AO3401A reverse polarity protection, 15V TVS, bulk capacitance, and Schottky OR-ing.",
+      "origin": { "x": 100, "y": 100 }
+    },
+    "buck_3v3": {
+      "title": "Synchronous Buck 12V/5V -> 3.3V (AP63203WU-7)",
+      "description": "Direct 3.3V 2A synchronous step-down converter for ESP32-C6.",
+      "origin": { "x": 450, "y": 100 }
+    },
+    "ldo_5v": {
+      "title": "5V LDO for HVAC UART Level Shifters (AMS1117-5.0)",
+      "description": "Low-current 5V rail for 74LVC1T45 VCCB with PWR LED providing minimum load.",
+      "origin": { "x": 450, "y": 380 }
+    },
+    "mcu": {
+      "title": "ESP32-C6-WROOM-1-N4 MCU, Reset & Boot",
+      "description": "Main Wi-Fi 6 / Zigbee 3.0 module, EN RC delay, strapping pull-up, BOOT/RST buttons, STA LED.",
+      "origin": { "x": 850, "y": 100 }
+    },
+    "usb": {
+      "title": "Native USB-C Interface & ESD Protection",
+      "description": "16-pin USB-C receptacle, 5.1k CC resistors, USBLC6-2SC6 ESD protection, 22 ohm series damping.",
+      "origin": { "x": 100, "y": 420 }
+    },
+    "uart_level_shift": {
+      "title": "Unidirectional UART 3.3V <-> 5V Level Shifters",
+      "description": "Dual 74LVC1T45W6-7 isolating TX and RX between ESP32-C6 and Airton 5V bus.",
+      "origin": { "x": 850, "y": 480 }
+    }
+  },
+  "components": {
+    "J1": {
+      "block": "power_input",
+      "role": "Airton 4-pin HVAC connector (12V, RX, TX, GND)",
+      "lcsc": "C265097",
+      "mpn": "S04B-XASK-1(LF)(SN)",
+      "value": null,
+      "package": "CONN-TH_S04B-XASK-1-LF-SN",
+      "rotation": 0
+    },
+    "Q1": {
+      "block": "power_input",
+      "role": "Reverse-polarity protection P-MOSFET",
+      "lcsc": "C15127",
+      "mpn": "AO3401A",
+      "value": null,
+      "package": "SOT-23",
+      "rotation": 0
+    },
+    "R1": {
+      "block": "power_input",
+      "role": "AO3401A Vgs divider upper resistor",
+      "lcsc": "C25803",
+      "mpn": "0603WAF1003T5E",
+      "value": "100kΩ",
+      "package": "0603",
+      "rotation": 90
+    },
+    "R2": {
+      "block": "power_input",
+      "role": "AO3401A Vgs divider lower resistor",
+      "lcsc": "C25803",
+      "mpn": "0603WAF1003T5E",
+      "value": "100kΩ",
+      "package": "0603",
+      "rotation": 90
+    },
+    "D1": {
+      "block": "power_input",
+      "role": "15V input transient TVS diode",
+      "lcsc": "C19077509",
+      "mpn": "SMF15A",
+      "value": "15V",
+      "package": "SOD-123FL",
+      "rotation": 90
+    },
+    "C1": {
+      "block": "power_input",
+      "role": "12V anti-brownout bulk capacitor 1",
+      "lcsc": "C12891",
+      "mpn": "CL31A226KAHNNNE",
+      "value": "22uF/25V",
+      "package": "1206",
+      "rotation": 90
+    },
+    "C2": {
+      "block": "power_input",
+      "role": "12V anti-brownout bulk capacitor 2",
+      "lcsc": "C12891",
+      "mpn": "CL31A226KAHNNNE",
+      "value": "22uF/25V",
+      "package": "1206",
+      "rotation": 90
+    },
+    "D2": {
+      "block": "power_input",
+      "role": "12V rail OR-ing Schottky diode",
+      "lcsc": "C191023",
+      "mpn": "1N5819WS",
+      "value": null,
+      "package": "SOD-323",
+      "rotation": 0
+    },
+    "D3": {
+      "block": "power_input",
+      "role": "USB VBUS OR-ing Schottky diode",
+      "lcsc": "C191023",
+      "mpn": "1N5819WS",
+      "value": null,
+      "package": "SOD-323",
+      "rotation": 0
+    },
+    "U1": {
+      "block": "buck_3v3",
+      "role": "Synchronous 3.3V 2A Buck regulator",
+      "lcsc": "C780769",
+      "mpn": "AP63203WU-7",
+      "value": null,
+      "package": "TSOT-23-6",
+      "rotation": 0
+    },
+    "C3": {
+      "block": "buck_3v3",
+      "role": "Buck VIN ceramic decoupling",
+      "lcsc": "C13585",
+      "mpn": "CL31A106KBHNNNE",
+      "value": "10uF/50V",
+      "package": "1206",
+      "rotation": 90
+    },
+    "C4": {
+      "block": "buck_3v3",
+      "role": "Buck BST-SW bootstrap capacitor",
+      "lcsc": "C307331",
+      "mpn": "CL05B104KB54PNC",
+      "value": "100nF/50V",
+      "package": "0402",
+      "rotation": 0
+    },
+    "L1": {
+      "block": "buck_3v3",
+      "role": "Buck power inductor",
+      "lcsc": "C48601350",
+      "mpn": "SWPA4030S4R7MT",
+      "value": "4.7uH",
+      "package": "IND-SMD_4.0x4.0",
+      "rotation": 0
+    },
+    "C5": {
+      "block": "buck_3v3",
+      "role": "Buck 3.3V output capacitor 1",
+      "lcsc": "C45783",
+      "mpn": "CL21A226MAQNNNE",
+      "value": "22uF/25V",
+      "package": "0805",
+      "rotation": 90
+    },
+    "C6": {
+      "block": "buck_3v3",
+      "role": "Buck 3.3V output capacitor 2",
+      "lcsc": "C45783",
+      "mpn": "CL21A226MAQNNNE",
+      "value": "22uF/25V",
+      "package": "0805",
+      "rotation": 90
+    },
+    "U2": {
+      "block": "ldo_5v",
+      "role": "5V LDO for UART level shifters",
+      "lcsc": "C6187",
+      "mpn": "AMS1117-5.0",
+      "value": null,
+      "package": "SOT-223",
+      "rotation": 0
+    },
+    "C7": {
+      "block": "ldo_5v",
+      "role": "LDO 12V input decoupling",
+      "lcsc": "C13585",
+      "mpn": "CL31A106KBHNNNE",
+      "value": "10uF/50V",
+      "package": "1206",
+      "rotation": 90
+    },
+    "C8": {
+      "block": "ldo_5v",
+      "role": "LDO 5V output stability capacitor",
+      "lcsc": "C45783",
+      "mpn": "CL21A226MAQNNNE",
+      "value": "22uF/25V",
+      "package": "0805",
+      "rotation": 90
+    },
+    "R3": {
+      "block": "ldo_5v",
+      "role": "PWR LED series resistor (provides AMS1117 min load)",
+      "lcsc": "C23204",
+      "mpn": "0603WAF5600T5E",
+      "value": "560Ω",
+      "package": "0603",
+      "rotation": 0
+    },
+    "LED1": {
+      "block": "ldo_5v",
+      "role": "5V Power indicator LED (Green)",
+      "lcsc": "C2297",
+      "mpn": "KT-0805G",
+      "value": "Green",
+      "package": "0805",
+      "rotation": 90
+    },
+    "U3": {
+      "block": "mcu",
+      "role": "ESP32-C6-WROOM-1-N4 Wi-Fi 6 / Zigbee 3.0 module",
+      "lcsc": "C6034714",
+      "mpn": "ESP32-C6-WROOM-1-N4",
+      "value": null,
+      "package": "ESP32-C6-WROOM-1",
+      "rotation": 0
+    },
+    "C9": {
+      "block": "mcu",
+      "role": "ESP32-C6 3.3V bulk decoupling",
+      "lcsc": "C45783",
+      "mpn": "CL21A226MAQNNNE",
+      "value": "22uF/25V",
+      "package": "0805",
+      "rotation": 90
+    },
+    "C10": {
+      "block": "mcu",
+      "role": "ESP32-C6 3.3V HF decoupling",
+      "lcsc": "C1525",
+      "mpn": "CL05B104KO5NNNC",
+      "value": "100nF",
+      "package": "0402",
+      "rotation": 90
+    },
+    "R4": {
+      "block": "mcu",
+      "role": "EN (CHIP_PU) pull-up resistor",
+      "lcsc": "C25804",
+      "mpn": "0603WAF1002T5E",
+      "value": "10kΩ",
+      "package": "0603",
+      "rotation": 90
+    },
+    "C11": {
+      "block": "mcu",
+      "role": "EN (CHIP_PU) RC delay capacitor (datasheet 1uF)",
+      "lcsc": "C15849",
+      "mpn": "CL10A105KB8NNNC",
+      "value": "1uF",
+      "package": "0603",
+      "rotation": 90
+    },
+    "SW1": {
+      "block": "mcu",
+      "role": "RST tactile switch",
+      "lcsc": "C393942",
+      "mpn": "TS24CA",
+      "value": null,
+      "package": "SW-SMD_2P-TS24CA",
+      "rotation": 0
+    },
+    "SW2": {
+      "block": "mcu",
+      "role": "BOOT (GPIO9) tactile switch",
+      "lcsc": "C720477",
+      "mpn": "TS-1088-AR02016",
+      "value": null,
+      "package": "SW-SMD_L3.9-W3.0-P4.45",
+      "rotation": 0
+    },
+    "R5": {
+      "block": "mcu",
+      "role": "GPIO8 strapping pull-up resistor",
+      "lcsc": "C25804",
+      "mpn": "0603WAF1002T5E",
+      "value": "10kΩ",
+      "package": "0603",
+      "rotation": 90
+    },
+    "R6": {
+      "block": "mcu",
+      "role": "STA LED current-limiting resistor",
+      "lcsc": "C4190",
+      "mpn": "0603WAF2201T5E",
+      "value": "2.2kΩ",
+      "package": "0603",
+      "rotation": 0
+    },
+    "LED2": {
+      "block": "mcu",
+      "role": "Status LED (Red) on GPIO3",
+      "lcsc": "C2286",
+      "mpn": "KT-0603R",
+      "value": "Red",
+      "package": "0603",
+      "rotation": 90
+    },
+    "USB1": {
+      "block": "usb",
+      "role": "USB-C receptacle for native USB-Serial/JTAG",
+      "lcsc": "C2765186",
+      "mpn": "TYPE-C 16PIN 2MD(073)",
+      "value": null,
+      "package": "USB-C-SMD_TYPE-C-6PIN-2MD-073",
+      "rotation": 0
+    },
+    "R7": {
+      "block": "usb",
+      "role": "USB-C CC1 pull-down resistor",
+      "lcsc": "C23186",
+      "mpn": "0603WAF5101T5E",
+      "value": "5.1kΩ",
+      "package": "0603",
+      "rotation": 90
+    },
+    "R8": {
+      "block": "usb",
+      "role": "USB-C CC2 pull-down resistor",
+      "lcsc": "C23186",
+      "mpn": "0603WAF5101T5E",
+      "value": "5.1kΩ",
+      "package": "0603",
+      "rotation": 90
+    },
+    "D4": {
+      "block": "usb",
+      "role": "USB-C ESD protection array",
+      "lcsc": "C7519",
+      "mpn": "USBLC6-2SC6",
+      "value": null,
+      "package": "SOT-23-6",
+      "rotation": 0
+    },
+    "R9": {
+      "block": "usb",
+      "role": "USB D- series damping resistor",
+      "lcsc": "C23345",
+      "mpn": "0603WAF220JT5E",
+      "value": "22Ω",
+      "package": "0603",
+      "rotation": 0
+    },
+    "R10": {
+      "block": "usb",
+      "role": "USB D+ series damping resistor",
+      "lcsc": "C23345",
+      "mpn": "0603WAF220JT5E",
+      "value": "22Ω",
+      "package": "0603",
+      "rotation": 0
+    },
+    "C12": {
+      "block": "usb",
+      "role": "USB VBUS decoupling capacitor",
+      "lcsc": "C1525",
+      "mpn": "CL05B104KO5NNNC",
+      "value": "100nF",
+      "package": "0402",
+      "rotation": 90
+    },
+    "U4": {
+      "block": "uart_level_shift",
+      "role": "TX level shifter (ESP32 3.3V -> Airton 5V)",
+      "lcsc": "C168856",
+      "mpn": "74LVC1T45W6-7",
+      "value": null,
+      "package": "SOT-23-6",
+      "rotation": 0
+    },
+    "U5": {
+      "block": "uart_level_shift",
+      "role": "RX level shifter (Airton 5V -> ESP32 3.3V)",
+      "lcsc": "C168856",
+      "mpn": "74LVC1T45W6-7",
+      "value": null,
+      "package": "SOT-23-6",
+      "rotation": 0
+    },
+    "C13": {
+      "block": "uart_level_shift",
+      "role": "U4 VCCA (3.3V) decoupling",
+      "lcsc": "C1525",
+      "mpn": "CL05B104KO5NNNC",
+      "value": "100nF",
+      "package": "0402",
+      "rotation": 90
+    },
+    "C14": {
+      "block": "uart_level_shift",
+      "role": "U4 VCCB (5V) decoupling",
+      "lcsc": "C1525",
+      "mpn": "CL05B104KO5NNNC",
+      "value": "100nF",
+      "package": "0402",
+      "rotation": 90
+    },
+    "C15": {
+      "block": "uart_level_shift",
+      "role": "U5 VCCA (3.3V) decoupling",
+      "lcsc": "C1525",
+      "mpn": "CL05B104KO5NNNC",
+      "value": "100nF",
+      "package": "0402",
+      "rotation": 90
+    },
+    "C16": {
+      "block": "uart_level_shift",
+      "role": "U5 VCCB (5V) decoupling",
+      "lcsc": "C1525",
+      "mpn": "CL05B104KO5NNNC",
+      "value": "100nF",
+      "package": "0402",
+      "rotation": 90
+    }
+  },
+  "nets": {
+    "GND": {
+      "type": "ground",
+      "pins": [
+        "J1.1", "R2.2", "D1.A", "C1.2", "C2.2",
+        "U1.4", "C3.2", "C5.2", "C6.2",
+        "U2.1", "C7.2", "C8.2", "LED1.K",
+        "U3.1", "U3.28", "U3.29", "C9.2", "C10.2", "C11.2", "SW1.2", "SW2.2", "LED2.K",
+        "USB1.GND", "USB1.SHIELD", "R7.2", "R8.2", "D4.2", "C12.2",
+        "U4.2", "U5.2", "U5.5", "C13.2", "C14.2", "C15.2", "C16.2"
+      ]
+    },
+    "+12V_RAW": {
+      "type": "signal",
+      "pins": ["J1.4", "Q1.3"]
+    },
+    "P12V_GATE": {
+      "type": "signal",
+      "pins": ["Q1.1", "R1.2", "R2.1"]
+    },
+    "+12V_PROT": {
+      "type": "power",
+      "pins": ["Q1.2", "R1.1", "D1.K", "C1.1", "C2.1", "D2.A", "U2.3", "C7.1"]
+    },
+    "VBUS": {
+      "type": "power",
+      "pins": ["USB1.VBUS", "D4.5", "C12.1", "D3.A"]
+    },
+    "VIN_BUCK": {
+      "type": "power",
+      "pins": ["D2.K", "D3.K", "C3.1", "U1.3", "U1.2"]
+    },
+    "BUCK_SW": {
+      "type": "signal",
+      "pins": ["U1.5", "C4.2", "L1.1"]
+    },
+    "BUCK_BST": {
+      "type": "signal",
+      "pins": ["U1.6", "C4.1"]
+    },
+    "+3.3V": {
+      "type": "power",
+      "pins": [
+        "L1.2", "U1.1", "C5.1", "C6.1",
+        "U3.2", "C9.1", "C10.1", "R4.1", "R5.1",
+        "U4.1", "U4.5", "U5.1", "C13.1", "C15.1"
+      ]
+    },
+    "+5V": {
+      "type": "power",
+      "pins": ["U2.2", "C8.1", "R3.1", "U4.6", "U5.6", "C14.1", "C16.1"]
+    },
+    "PWR_LED_A": {
+      "type": "signal",
+      "pins": ["R3.2", "LED1.A"]
+    },
+    "CHIP_EN": {
+      "type": "signal",
+      "pins": ["U3.3", "R4.2", "C11.1", "SW1.1"]
+    },
+    "ESP_BOOT": {
+      "type": "signal",
+      "pins": ["U3.15", "SW2.1"]
+    },
+    "ESP_IO8": {
+      "type": "signal",
+      "pins": ["U3.10", "R5.2"]
+    },
+    "ESP_STA_LED": {
+      "type": "signal",
+      "pins": ["U3.26", "R6.1"]
+    },
+    "STA_LED_A": {
+      "type": "signal",
+      "pins": ["R6.2", "LED2.A"]
+    },
+    "USB_CC1": {
+      "type": "signal",
+      "pins": ["USB1.CC1", "R7.1"]
+    },
+    "USB_CC2": {
+      "type": "signal",
+      "pins": ["USB1.CC2", "R8.1"]
+    },
+    "USB_DP": {
+      "type": "signal",
+      "pins": ["USB1.DP", "D4.1", "D4.3", "R10.1"]
+    },
+    "USB_DN": {
+      "type": "signal",
+      "pins": ["USB1.DN", "D4.4", "D4.6", "R9.1"]
+    },
+    "ESP_USB_DP": {
+      "type": "signal",
+      "pins": ["R10.2", "U3.14"]
+    },
+    "ESP_USB_DN": {
+      "type": "signal",
+      "pins": ["R9.2", "U3.13"]
+    },
+    "U0TX": {
+      "type": "signal",
+      "pins": ["U3.25", "U4.3"]
+    },
+    "U0RX": {
+      "type": "signal",
+      "pins": ["U3.24", "U5.3"]
+    },
+    "PTX": {
+      "type": "signal",
+      "pins": ["U4.4", "J1.3"]
+    },
+    "PRX": {
+      "type": "signal",
+      "pins": ["U5.4", "J1.2"]
+    },
+    "NC_ESP32": {
+      "type": "nc",
+      "pins": [
+        "U3.4", "U3.5", "U3.6", "U3.7", "U3.8", "U3.9",
+        "U3.11", "U3.12", "U3.16", "U3.17", "U3.18", "U3.19",
+        "U3.20", "U3.21", "U3.22", "U3.23", "U3.27"
+      ]
+    }
+  }
+}

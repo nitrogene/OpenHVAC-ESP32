@@ -7,7 +7,7 @@
 
 Open-source hardware engineering repository (schematic design, component dimensioning, PCB layout, 3D-printable enclosure, and JLCPCB manufacturing deliverables) for **OpenHVAC-ESP32**: a custom **ESP32 Zigbee** module designed to replace the stock **Tuya Wi-Fi module** in **Airton** split air conditioners.
 
-This project is inspired by [**devildant/acw02_esphome**](https://github.com/devildant/acw02_esphome), which serves as a primary reference source for Airton / ACW02 hardware and protocol details.
+This project is inspired by [**devildant/acw02_esphome**](https://github.com/devildant/acw02_esphome) and the [**Forhorse v2**](https://github.com/devildant/acw02_esphome/blob/main/docs/version_Forhorse.md) hardware/3D-enclosure design, which serve as the primary mechanical and protocol references for Airton / ACW02 units.
 
 > [!NOTE]
 > **Project Ecosystem & Repository Scope:**
